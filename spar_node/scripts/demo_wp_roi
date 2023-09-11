@@ -6,6 +6,7 @@ from math import *
 import rospy
 import actionlib
 from actionlib_msgs.msg import GoalStatus
+from espeak import espeak
 
 from geometry_msgs.msg import Point, PoseStamped
 
@@ -76,6 +77,16 @@ class Guidance():
 			# Good to go, start mission
 			rospy.loginfo("Starting waypoint mission")
 
+
+			# XXX: Could have a publisher to output our waypoint progress
+			# throughout the flight (should publish each time the waypoint
+			# counter is increased). Note: will also need to import "Float32"
+			# from "std_msgs.msg" in the header
+			# self.pub_progress = rospy.Subscriber("~waypoint_progress", Float32, 10)
+			self.current_position_publisher = rospy.Publisher("current_position", Point, queue_size=10)
+			#FOR NOW ITS JUST PUBLISHED IN THE WAYPOINT SENDER FUNCTION.
+
+
 			# Setup first waypoint segment
 			# XXX:	Another option would be to do "takeoff" and leave "nextWaypointIndex = 0" to
 			#		begin the mission at the first waypoint after take-off
@@ -97,12 +108,7 @@ class Guidance():
 			# Subscriber to catch "ROI" diversion commands
 			self.sub_roi = rospy.Subscriber("~roi", PoseStamped, self.callback_inspect_roi)
 
-			# XXX: Could have a publisher to output our waypoint progress
-			# throughout the flight (should publish each time the waypoint
-			# counter is increased). Note: will also need to import "Float32"
-			# from "std_msgs.msg" in the header
-			# self.pub_progress = rospy.Subscriber("~waypoint_progress", Float32, 10)
-
+	
 			# If shutdown is issued (eg. CTRL+C), cancel current
 	 		# mission before rospy is shutdown.
 			rospy.loginfo("Running callbacks while not shutdown...")
@@ -186,6 +192,7 @@ class Guidance():
 		# Set the "diversion waypoint" (at yaw zero)
 		# dwp = [msg_in.pose.position.x, msg_in.pose.position.y, msg_in.pose.position.z, 0.0]
 		dwp = [msg_in.pose.position.x, msg_in.pose.position.y, self.current_location.z, 0.0]
+		espeak.synth("Starting diversion to ROI")
 		# Set the "return waypoint" (at yaw zero)
 		rwp = [self.current_location.x, self.current_location.y, self.current_location.z, 0.0]
 
@@ -222,6 +229,10 @@ class Guidance():
 
 	# This function is for convinience to simply send out a new waypoint
 	def send_wp(self, wp):
+
+		self.current_position_publisher.publish(self.current_location)
+		rospy.loginfo("SENT CURRENT LOCATION")
+
 		# Make sure the waypoint is valid before continuing
 		if not self.check_waypoint(wp):
 			rospy.logwarn("Invalid waypoint, skipped...")
@@ -404,3 +415,24 @@ if __name__ == '__main__':
 		pass
 
 	print('Node Closed')
+
+
+
+
+
+#rostopic pub /pose_example geometry_msgs/PoseStamped "header:
+#  seq: 0
+#  stamp:
+#    secs: 0
+#    nsecs: 0
+#  frame_id: 'base_link'
+#pose:
+#  position:
+#    x: 1.0
+#    y: 2.0
+#    z: 0.0
+#  orientation:
+#    x: 0.0
+#    y: 0.0
+#    z: 0.0
+#    w: 1.0"
