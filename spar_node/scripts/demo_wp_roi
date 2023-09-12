@@ -29,9 +29,17 @@ class Guidance():
 	def __init__(self, waypoints):
 		# Make sure we have a valid waypoint list
 		# Safe boundary values, default to X<2,Y<2,Z<2.
-		self.safeRangeX = rospy.get_param("~safeRangeX", 2)
-		self.safeRangeY = rospy.get_param("~safeRangeY", 2)
-		self.safeRangeZ = rospy.get_param("~safeRangeZ", 2) 
+		self.safeRangeX = rospy.get_param("~safeRangeX", 4)
+		self.safeRangeY = rospy.get_param("~safeRangeY", 2.5)
+		self.safeRangeZ = rospy.get_param("~safeRangeZ", 4) 
+
+		#Setup variable to store landing information.
+		self.landing_coordinate = None
+		self.detected_landing_point = False
+
+		#Imaging variables.
+		self.detected_bag = False
+		self.detected_person = False
 
 		if not self.check_waypoints(waypoints):
 			raise ArgumentError("Invalid waypoint list input!")
@@ -108,6 +116,11 @@ class Guidance():
 			# Subscriber to catch "ROI" diversion commands
 			self.sub_roi = rospy.Subscriber("~roi", PoseStamped, self.callback_inspect_roi)
 
+			#Setup subscriber for landing ArUco detection.
+			self.sub_landing_coordinate = rospy.Subscriber("landing_id_coordinate", Point, self.callback_landing_coordinate)
+
+			self.final_coordinate_start = False
+			self.final_coordinate_finished = False
 	
 			# If shutdown is issued (eg. CTRL+C), cancel current
 	 		# mission before rospy is shutdown.
@@ -172,65 +185,79 @@ class Guidance():
 	def callback_pose(self, msg_in):
 		# Store the current position at all times so it can be accessed later
 		# rospy.loginfo("Updating Pose UAV...")
+		self.current_position_publisher.publish(self.current_location)
 		self.current_location = msg_in.pose.position
 
 
 	# This function will fire whenever a ROI pose message is sent
 	# It is also responsible for handling the ROI "inspection task"
 	def callback_inspect_roi(self, msg_in):
-		# Set our flag that we are performing the diversion
-		self.performing_roi = True
+		
 
-		rospy.loginfo("Starting diversion to ROI...")
-		# Cancel the current goal (if there is one)
-		self.spar_client.cancel_goal()
-		# Record our current location so we can return to it later
-		start_location = self.current_location
-		# XXX:	It would also be a good idea to capture "current yaw" from
-		#		the pose to maintain that throughout a diversion
+		if ((msg_in.pose.position.z == 0) and (not self.detected_bag)) or ((msg_in.pose.position.z == 2) and (not self.detected_person)):
 
-		# Set the "diversion waypoint" (at yaw zero)
-		# dwp = [msg_in.pose.position.x, msg_in.pose.position.y, msg_in.pose.position.z, 0.0]
-		dwp = [msg_in.pose.position.x, msg_in.pose.position.y, self.current_location.z, 0.0]
-		espeak.synth("Starting diversion to ROI")
-		# Set the "return waypoint" (at yaw zero)
-		rwp = [self.current_location.x, self.current_location.y, self.current_location.z, 0.0]
+			# Set our flag that we are performing the diversion
+			self.performing_roi = True
 
-		# XXX: Could pause here for a moment with ( "rospy.sleep(...)" ) to make sure the UAV stops correctly
+			rospy.loginfo("Starting diversion to ROI...")
+			# Cancel the current goal (if there is one)
+			self.spar_client.cancel_goal()
+			# Record our current location so we can return to it later
+			start_location = self.current_location
+			# XXX:	It would also be a good idea to capture "current yaw" from
+			#		the pose to maintain that throughout a diversion
 
-		self.send_wp(dwp)
-		self.spar_client.wait_for_result()
-		if self.spar_client.get_state() != GoalStatus.SUCCEEDED:
-			# Something went wrong, cancel out of guidance!
-			rospy.signal_shutdown("cancelled")
-			return
 
-		rospy.loginfo("Reached diversion ROI!")
-		# XXX: Do something?
-		rospy.sleep(rospy.Duration(10))
+		
+			if(msg_in.pose.position.z == 0):
+				rospy.loginfo("BAG Detected...")
+				self.detected_bag = True
+			elif(msg_in.pose.position.z == 2):
+				rospy.loginfo("PERSON Detected...")
+				self.detected_person = True
 
-		rospy.loginfo("Returning to flight plan...")
+			# Set the "diversion waypoint" (at yaw zero)
+			# dwp = [msg_in.pose.position.x, msg_in.pose.position.y, msg_in.pose.position.z, 0.0]
+			dwp = [msg_in.pose.position.x, msg_in.pose.position.y, self.current_location.z, 0.0]
+			espeak.synth("Starting diversion to ROI")
+			# Set the "return waypoint" (at yaw zero)
+			rwp = [self.current_location.x, self.current_location.y, self.current_location.z, 0.0]
 
-		self.send_wp(rwp)
-		self.spar_client.wait_for_result()
-		if self.spar_client.get_state() != GoalStatus.SUCCEEDED:
-			# Something went wrong, cancel out of guidance!
-			rospy.signal_shutdown("cancelled")
-			return
+			# XXX: Could pause here for a moment with ( "rospy.sleep(...)" ) to make sure the UAV stops correctly
 
-		# "nextWaypointIndex" represents the "next waypoint"
-		# "nextWaypointIndex - 1" represents the "current waypoint"
-		rospy.loginfo("Resuming flight plan from waypoint %i!" % (self.nextWaypointIndex - 1))
-		self.send_wp(self.waypoints[self.nextWaypointIndex - 1])
-		# Unset our flag that we are performing a diversion
-		# to allow the waypoint timer to take back over
-		self.performing_roi = False
+			self.send_wp(dwp)
+			self.spar_client.wait_for_result()
+			if self.spar_client.get_state() != GoalStatus.SUCCEEDED:
+				# Something went wrong, cancel out of guidance!
+				rospy.signal_shutdown("cancelled")
+				return
+
+			rospy.loginfo("Reached diversion ROI!")
+			# XXX: Do something?
+			rospy.sleep(rospy.Duration(10))
+
+			rospy.loginfo("Returning to flight plan...")
+
+			self.send_wp(rwp)
+			self.spar_client.wait_for_result()
+			if self.spar_client.get_state() != GoalStatus.SUCCEEDED:
+				# Something went wrong, cancel out of guidance!
+				rospy.signal_shutdown("cancelled")
+				return
+
+			# "nextWaypointIndex" represents the "next waypoint"
+			# "nextWaypointIndex - 1" represents the "current waypoint"
+			rospy.loginfo("Resuming flight plan from waypoint %i!" % (self.nextWaypointIndex - 1))
+			self.send_wp(self.waypoints[self.nextWaypointIndex - 1])
+			# Unset our flag that we are performing a diversion
+			# to allow the waypoint timer to take back over
+			self.performing_roi = False
 
 
 	# This function is for convinience to simply send out a new waypoint
 	def send_wp(self, wp):
 
-		self.current_position_publisher.publish(self.current_location)
+		
 		rospy.loginfo("SENT CURRENT LOCATION")
 
 		# Make sure the waypoint is valid before continuing
@@ -258,6 +285,7 @@ class Guidance():
 		# This checking is either with the "self.timer" for waypoints
 		# or with direct calls during the ROI diversion
 		self.spar_client.send_goal(goal)
+		
 		 # If shutdown is issued, cancel current mission before rospy is shutdown
 		rospy.on_shutdown(lambda : self.spar_client.cancel_goal())
 
@@ -343,8 +371,27 @@ class Guidance():
 					# Else the mission is over, shutdown and quit the node
 					# XXX:	This could be used to restart the mission back to the
 					#		first waypoint instead to restart the mission
-					rospy.loginfo("Mission complete!")
+
+
+					#If landing point was detected then go there.	
+					#if self.detected_landing_point:
+					#	if not self.final_coordinate_start:
+					#		self.final_coordinate_finished = False
+					#		self.send_wp([self.landing_coordinate.x, self.landing_coordinate.y, self.landing_coordinate.z, 0])
+					#		self.final_coordinate_start = True
+					#		rospy.loginfo("fuck you")
+					#
+					#
+					#	if self.final_coordinate_finished and self.final_coordinate_start:
+					#		rospy.loginfo("Mission csdsdfdsfdsfdsfsdf;")
+					#		rospy.signal_shutdown("Complete, Wooh!")
+					#else:
+					#	rospy.loginfo("Mission complete1!")
+					#	rospy.signal_shutdown("Complete, Wooh!")
+					rospy.loginfo("Mission complete1!")
 					rospy.signal_shutdown("Complete, Wooh!")
+
+
 			elif (self.spar_client.get_state() == GoalStatus.PREEMPTED) or (self.spar_client.get_state() == GoalStatus.ABORTED) or (self.spar_client.get_state() == GoalStatus.REJECTED):
 				rospy.loginfo("Mission cancelled!")
 				rospy.signal_shutdown("cancelled")
@@ -372,6 +419,22 @@ class Guidance():
 		rospy.loginfo("Publishing path...")
 		pub_path.publish(msg)
 
+	def callback_landing_coordinate(self, msg_in):
+		if not self.detected_landing_point:
+			espeak.synth("Landing coordinate detected")
+			rospy.loginfo("Detected landing coordinate.")
+			rospy.loginfo(msg_in.x)
+			rospy.loginfo(msg_in.y)
+			rospy.loginfo(msg_in.z)
+			self.landing_coordinate = msg_in
+			self.detected_landing_point = True
+
+			self.waypoints.append([msg_in.x, msg_in.y, 2, 0])
+			self.waypoints.append([msg_in.x, msg_in.y, 1, 0])
+
+			
+
+	
 
 def main(args):
 	# Initialise ROS
@@ -396,13 +459,28 @@ def main(args):
 		   [ 1.0,-1.0, surveyAltitude*2, 0.0],
 		   [ 0.0, 0.0, surveyAltitude*2, 0.0]]
 
+	#Lawnmower pattern.
+	lawn_alt = 3
+	lawn_wps = [[ 0.0, 0.0, lawn_alt , 0.0],
+		   [-3.5, 0.0, lawn_alt , 0.0],
+		   [ -3.5, -2.0,lawn_alt, 0.0],
+		   [3.5, -2.0, lawn_alt, 0.0],
+		   [3.5,-1.0, lawn_alt, 0.0],
+		   [ -3.5,-1.0, lawn_alt, 0.0],
+		   [ -3.5,0.0, lawn_alt, 0.0],
+		   [ 3.5 ,0.0, lawn_alt, 0.0],
+		   [ 3.5, 1.0, lawn_alt, 0.0],
+		   [ -3.5, 1.0, lawn_alt, 0.0],
+		   [ -3.5, 2.0, lawn_alt, 0.0],
+		   [ 3.5, 2.0, lawn_alt, 0.0]]
+
 	if surveyAltitude > 2:
 		wps = wpsR1
 	else:
 		wps = wpsR2
 
 	# Create our guidance class option
-	guide = Guidance(wps)
+	guide = Guidance(lawn_wps)
 
 	# Spin!
 	rospy.spin()
