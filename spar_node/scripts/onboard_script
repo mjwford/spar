@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+
+
+import paramiko
+import sys
+import rospy
+
+from std_msgs.msg import String
+
+
+rospy.init_node('onboard_init')
+data = sys.argv[1]
+
+# Replace these values with your Raspberry Pi's SSH credentials
+raspberry_pi_ip = data
+raspberry_pi_username = "gcsteam6"
+raspberry_pi_password = "password"
+
+
+def send_gcs(msg_in):
+
+    # Replace this with the path to the script you want to run on the Raspberry Pi
+    script_to_run = '~/Documents/test.py "' + msg_in.data + '"'
+ 
+    # Create an SSH client instance
+    ssh_client = paramiko.SSHClient()
+    
+    try:
+        # Automatically add the Raspberry Pi's SSH key to the local known_hosts file (not recommended for production)
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        # Connect to the Raspberry Pi
+        ssh_client.connect(hostname=raspberry_pi_ip, username=raspberry_pi_username, password=raspberry_pi_password)
+        
+        # Run the script on the Raspberry Pi
+        stdin, stdout, stderr = ssh_client.exec_command(f"python3 {script_to_run}")
+        
+        # Print the script's output
+        print(stdout.read().decode('utf-8'))
+        print("WORKS3")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+    finally:
+        # Close the SSH connection
+        ssh_client.close()
+
+
+espeak_sub = rospy.Subscriber("espeak_topic", String, send_gcs)
+rospy.loginfo("Listening for espeak published messages...")
+
+
+rospy.spin()
