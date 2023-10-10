@@ -34,7 +34,7 @@ from breadcrumb.srv import RequestPathRequest
 # i.e. it will have it's own publishers, subscribers, etc., that
 # will call it's own functions as callbacks, etc.
 class Guidance():
-	def __init__(self, waypoints):
+	def __init__(self, waypoints, extended_waypoints):
 		# Make sure we have a valid waypoint list
 		# Safe boundary values, default to X<2,Y<2,Z<2.
 		self.safeRangeX = rospy.get_param("~safeRangeX", 4)
@@ -49,7 +49,7 @@ class Guidance():
 		self.battery_per = 100
 		self.critical_battery = 20
 		
-	
+		self.landing_variable = None
 
 		#Imaging variables.
 		self.detected_bag = False
@@ -68,7 +68,8 @@ class Guidance():
 		self.performing_roi = False
 
 		# Save the input waypoints
-		self.waypoints = waypoints
+		self.waypoints = extended_waypoints
+		self.og_waypoints = waypoints
 		# Display the full path
 		self.display_path(waypoints,"/guidance/fullPath")
 
@@ -120,6 +121,13 @@ class Guidance():
 			# Setup first waypoint segment
 			# XXX:	Another option would be to do "takeoff" and leave "nextWaypointIndex = 0" to
 			#		begin the mission at the first waypoint after take-off
+			
+			
+			#DO TAKEOFF HERE.
+			# ASK IF MORE NECESSARY
+			self.send_takeoff_motion(self.spar_client)
+			# ASK IF MORE NECESSARY
+			
 			rospy.loginfo("Doing first waypoint / maybe takeoff")
 			self.send_wp(self.waypoints[0])
 			self.nextWaypointIndex += 1
@@ -238,9 +246,18 @@ class Guidance():
 			if(msg_in.pose.position.z == 0):
 				rospy.loginfo("BAG Detected...")
 				self.detected_bag = True
+				#espeak.synth("Starting diversion to ROI")
+				self.espeak_publisher.publish("Bag detected. Starting diversion to ROI")
 			elif(msg_in.pose.position.z == 1):
 				rospy.loginfo("PERSON Detected...")
 				self.detected_person = True
+				#espeak.synth("Starting diversion to ROI")
+				self.espeak_publisher.publish("Person detected. Starting diversion to ROI")
+
+
+			
+
+			
 
 			# Set the "diversion waypoint" (at yaw zero)
 			# dwp = [msg_in.pose.position.x, msg_in.pose.position.y, msg_in.pose.position.z, 0.0]
@@ -248,8 +265,7 @@ class Guidance():
 			dwp = [msg_in.pose.position.x, msg_in.pose.position.y, 0.65, 0.0]
 			
 			
-			#espeak.synth("Starting diversion to ROI")
-			self.espeak_publisher.publish("Starting diversion to ROI")
+			
 			
 			# Set the "return waypoint" (at yaw zero)
 			rwp = [self.current_location.x, self.current_location.y, self.current_location.z, 0.0]
@@ -277,10 +293,27 @@ class Guidance():
 
 			rospy.sleep(rospy.Duration(5))
 
+			
+
 			rospy.loginfo("Returning to flight plan...")
 
 			self.send_wp(rwp)
 			self.spar_client.wait_for_result()
+
+			#Shorten the path to one sweep if both are detected.
+			if(self.detected_bag and self.detected_person and self.detected_landing_point):
+				#Switched from above to abdulleys stuff.
+				self.performing_roi = True
+				self.spar_client.cancel_goal()
+				self.send_wp(self.landing_variable)
+				self.spar_client.wait_for_result()
+				self.send_wp([self.landing_variable[0], self.landing_variable[1], 0.4, 0.0])
+				self.spar_client.wait_for_result()
+				rospy.sleep(rospy.Duration(5, 0))
+				self.send_landing_motion(self.spar_client)
+
+				#Both people are detected, shorten the coordinates. 
+
 			if self.spar_client.get_state() != GoalStatus.SUCCEEDED:
 				# Something went wrong, cancel out of guidance!
 				rospy.signal_shutdown("cancelled")
@@ -298,7 +331,7 @@ class Guidance():
 	# This function is for convinience to simply send out a new waypoint
 	def send_wp(self, wp):
 
-		
+
 		rospy.loginfo("SENT CURRENT LOCATION")
 
 		# Make sure the waypoint is valid before continuing
@@ -434,7 +467,7 @@ class Guidance():
 
 
 			elif (self.spar_client.get_state() == GoalStatus.PREEMPTED) or (self.spar_client.get_state() == GoalStatus.ABORTED) or (self.spar_client.get_state() == GoalStatus.REJECTED):
-				rospy.loginfo("Mission cancelled!")
+				rospy.loginfo("Mission cancelled! smoge")
 				rospy.signal_shutdown("cancelled")
 
 	# Display a path
@@ -474,6 +507,32 @@ class Guidance():
 			self.waypoints.append([msg_in.x, self.waypoints[len(self.waypoints) - 1][1], 1, 0])
 			self.waypoints.append([self.waypoints[len(self.waypoints) - 1][0], msg_in.y, 1, 0])
 
+			self.landing_variable = [self.waypoints[len(self.waypoints) - 1][0], self.waypoints[len(self.waypoints) - 1][1], 1, 0]
+
+			#Shorten the path to one sweep if both are detected.
+			if(self.detected_bag and self.detected_person and self.detected_landing_point):
+				
+				
+				
+				
+				#if((self.nextWaypointIndex-1) <= (len(self.waypoints) / 2)):
+				#	self.waypoints = self.og_waypoints + self.waypoints[-2:]
+				#elif ((self.nextWaypointIndex - 1) < (len(self.waypoints) - 2)):
+				#	self.waypoints = self.waypoints[:self.nextWaypointIndex] + self.waypoints[-2:]
+				#
+				#Both people are detected, shorten the coordinates. 
+
+
+				#Switched from above to abdulleys stuff.
+				self.performing_roi = True
+				self.spar_client.cancel_goal()
+				self.send_wp(self.landing_variable)
+				self.spar_client.wait_for_result()
+				self.send_wp([self.landing_variable[0], self.landing_variable[1], 0.4, 0.0])
+				self.spar_client.wait_for_result()
+				rospy.sleep(rospy.Duration(5, 0))
+				self.send_landing_motion(self.spar_client)
+
 
 	def callback_battery(self, msg_in):
 		self.battery_per = msg_in.percentage
@@ -499,7 +558,82 @@ class Guidance():
 		
 			rospy.loginfo("Emergency land completed.")
 
+	def send_takeoff_motion(self, spar_client):
+		# Create our goal
+		goal = FlightMotionGoal()
+		goal.motion = FlightMotionGoal.MOTION_TAKEOFF
+		goal.position.z = rospy.get_param("~height", 1.0)			# Other position information is ignored
+		goal.velocity_vertical = rospy.get_param("~speed", 0.2)		# Other velocity information is ignored
+		goal.wait_for_convergence = True							# Wait for our takeoff "waypoint" to be reached
+		goal.position_radius = rospy.get_param("~position_radius", 0.3)
+		goal.yaw_range = rospy.get_param("~yaw_range", 0.1)
 
+		# Send the goal
+		rospy.loginfo("Sending goal motion...")
+		spar_client.send_goal(goal)
+		# If shutdown is issued, cancel current mission before rospy is shutdown
+		rospy.on_shutdown(lambda : spar_client.cancel_goal())
+		# Wait for the result of the goal
+		spar_client.wait_for_result()
+
+		# Output some feedback for our flight
+		result = spar_client.get_state()
+		if result == GoalStatus.SUCCEEDED:
+			rospy.loginfo("Take-off complete!")
+		else:
+			rospy.logerr("Take-off failed!")
+
+			# Detailed Feedback
+			if result != GoalStatus.SUCCEEDED:
+				if(result == GoalStatus.PENDING) or (result == GoalStatus.ACTIVE):
+					rospy.loginfo("Sent command to cancel current mission")
+				elif(result == GoalStatus.PREEMPTED):
+					rospy.logwarn("The current mission was cancelled")
+				elif(result == GoalStatus.ABORTED):
+					rospy.logwarn("The current mission was aborted")
+				elif(result == GoalStatus.RECALLED):
+					rospy.logerr("Error: The current mission was recalled")
+				elif(result == GoalStatus.REJECTED):
+					rospy.logerr("Error: The current mission was rejected")
+				else:
+					rospy.logerr("Error: An unknown goal status was recieved")
+
+	def send_landing_motion(self, spar_client):
+		# Create our goal
+		goal = FlightMotionGoal()
+		goal.motion = FlightMotionGoal.MOTION_LAND
+		goal.velocity_vertical = rospy.get_param("~speed", 0.2)		# Other velocity information is ignored
+		# No other information is used
+
+		# Send the goal
+		rospy.loginfo("Sending goal motion...")
+		spar_client.send_goal(goal)
+		# If shutdown is issued, cancel current mission before rospy is shutdown
+		rospy.on_shutdown(lambda : spar_client.cancel_goal())
+		# Wait for the result of the goal
+		spar_client.wait_for_result()
+
+		# Output some feedback for our flight
+		result = spar_client.get_state()
+		if result == GoalStatus.SUCCEEDED:
+			rospy.loginfo("Landing complete!")
+		else:
+			rospy.logerr("Landing failed!")
+
+			# Detailed Feedback
+			if result != GoalStatus.SUCCEEDED:
+				if(result == GoalStatus.PENDING) or (result == GoalStatus.ACTIVE):
+					rospy.loginfo("Sent command to cancel current mission")
+				elif(result == GoalStatus.PREEMPTED):
+					rospy.logwarn("The current mission was cancelled")
+				elif(result == GoalStatus.ABORTED):
+					rospy.logwarn("The current mission was aborted")
+				elif(result == GoalStatus.RECALLED):
+					rospy.logerr("Error: The current mission was recalled")
+				elif(result == GoalStatus.REJECTED):
+					rospy.logerr("Error: The current mission was rejected")
+				else:
+					rospy.logerr("Error: An unknown goal status was recieved")
 
 
 #Generates waypoints given search area, altitude, FOV and overlap.
@@ -544,7 +678,9 @@ def generate_waypoints(search_x, search_y, altitude, fov, overlap):
 			waypoint_list.append(bottom_waypoint)
 
 	#Return the waypoint list.
-	return waypoint_list		
+	return waypoint_list	
+
+
 
 	
 
@@ -596,8 +732,15 @@ def main(args):
 	alt = 3
 	fov = 19.59
 	overlap = 0.4 #40%.
-
+	
 	lawn_wps = generate_waypoints(x, y, alt, fov, overlap)
+	rospy.loginfo("b4 insert")
+	lawn_wps.insert(0, [-1.0, -1.0, 1.0, 0.0])
+	rospy.loginfo("after insert")
+	reversed_lawn_wps = lawn_wps[:-1][::-1]
+
+	lawn_wps_extended = lawn_wps + reversed_lawn_wps
+
 
 	# lawn_alt = 3
 	# lawn_wps = [[ 0.0, 0.0, lawn_alt , 0.0],
@@ -618,9 +761,10 @@ def main(args):
 	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
 	#  	   [ 0.0, 0.0, lawn_alt , 0.0]]
 
+	
 
 	# Create our guidance class option
-	guide = Guidance(lawn_wps)
+	guide = Guidance(lawn_wps, lawn_wps_extended)
 
 	# Spin!
 	rospy.spin()
