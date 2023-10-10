@@ -4,7 +4,7 @@
 		<!-- Survey Altitude -->
 		<param name="surveyAlt" type="double" value="0.75" />
 		<!-- Linear and yaw motion velocities -->
-		<param name="vel_linear" type="double" value="2.0" />
+		<param name="vel_linear" type="double" value="0.5" />
 		<param name="vel_yaw" type="double" value="0.2" />
 
 		<!-- Position and yaw waypoint accuracies -->
@@ -20,8 +20,10 @@
 		<!-- Spar parameters -->
 		<param name="action_topic" type="string" value="spar/flight" />
 
-		<!-- Remappings -->
+		<!-- Remappings (SWAP COMMENTED POSE FOR REAL WORLD)-->
 		<remap from="~/pose" to="uavasr/pose" />
+		<!--<remap from="~/pose" to="/mavros/local_position/pose"/>-->
+
 		<remap from="~roi" to="target_detection/roi" />
 	</node>
 </launch>

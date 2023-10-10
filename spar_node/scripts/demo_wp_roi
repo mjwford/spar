@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 
+
 import sys
 from math import *
-
+from std_msgs.msg import Bool
 import rospy
 import actionlib
+import math
 from actionlib_msgs.msg import GoalStatus
 from espeak import espeak
+from std_msgs.msg import String
+
+from sensor_msgs.msg import BatteryState
 
 from geometry_msgs.msg import Point, PoseStamped
 
@@ -17,6 +22,9 @@ from spar_msgs.msg import FlightMotionAction, FlightMotionGoal
 # Libraries for interfacing with BreadCrumb
 from breadcrumb.srv import RequestPath
 from breadcrumb.srv import RequestPathRequest
+
+
+#rostopic pub /mavros/battery sensor_msgs/BatteryState '{percentage: 20.0}'
 
 
 # This is getting a bit more complicated now, so we'll put our information in
@@ -36,6 +44,12 @@ class Guidance():
 		#Setup variable to store landing information.
 		self.landing_coordinate = None
 		self.detected_landing_point = False
+
+		self.topic_battery = '/mavros/battery'
+		self.battery_per = 100
+		self.critical_battery = 20
+		
+	
 
 		#Imaging variables.
 		self.detected_bag = False
@@ -92,7 +106,15 @@ class Guidance():
 			# from "std_msgs.msg" in the header
 			# self.pub_progress = rospy.Subscriber("~waypoint_progress", Float32, 10)
 			self.current_position_publisher = rospy.Publisher("current_position", Point, queue_size=10)
-			#FOR NOW ITS JUST PUBLISHED IN THE WAYPOINT SENDER FUNCTION.
+			
+
+			#Espeak publisher.
+			self.espeak_publisher = rospy.Publisher("espeak_topic", String, queue_size=10)
+			
+
+			#Payload publisher.
+			#rostopic pub /actuator_control/actuator_a std_msgs/Bool '{data: True}'
+			self.payload_pub = rospy.Publisher("/actuator_control/actuator_a", Bool, queue_size=10)
 
 
 			# Setup first waypoint segment
@@ -115,6 +137,9 @@ class Guidance():
 			self.sub_pose = rospy.Subscriber("~pose", PoseStamped, self.callback_pose)
 			# Subscriber to catch "ROI" diversion commands
 			self.sub_roi = rospy.Subscriber("~roi", PoseStamped, self.callback_inspect_roi)
+
+			# Subscriber for current battery
+			self.sub_battery = rospy.Subscriber(self.topic_battery, BatteryState, self.callback_battery)
 
 			#Setup subscriber for landing ArUco detection.
 			self.sub_landing_coordinate = rospy.Subscriber("landing_id_coordinate", Point, self.callback_landing_coordinate)
@@ -192,9 +217,10 @@ class Guidance():
 	# This function will fire whenever a ROI pose message is sent
 	# It is also responsible for handling the ROI "inspection task"
 	def callback_inspect_roi(self, msg_in):
-		
 
-		if ((msg_in.pose.position.z == 0) and (not self.detected_bag)) or ((msg_in.pose.position.z == 2) and (not self.detected_person)):
+		rospy.loginfo(msg_in.pose.position.z)		
+
+		if ((msg_in.pose.position.z == 0) and (not self.detected_bag)) or ((msg_in.pose.position.z == 1) and (not self.detected_person)):
 
 			# Set our flag that we are performing the diversion
 			self.performing_roi = True
@@ -212,14 +238,19 @@ class Guidance():
 			if(msg_in.pose.position.z == 0):
 				rospy.loginfo("BAG Detected...")
 				self.detected_bag = True
-			elif(msg_in.pose.position.z == 2):
+			elif(msg_in.pose.position.z == 1):
 				rospy.loginfo("PERSON Detected...")
 				self.detected_person = True
 
 			# Set the "diversion waypoint" (at yaw zero)
 			# dwp = [msg_in.pose.position.x, msg_in.pose.position.y, msg_in.pose.position.z, 0.0]
-			dwp = [msg_in.pose.position.x, msg_in.pose.position.y, self.current_location.z, 0.0]
-			espeak.synth("Starting diversion to ROI")
+			#dwp = [msg_in.pose.position.x, msg_in.pose.position.y, self.current_location.z, 0.0]
+			dwp = [msg_in.pose.position.x, msg_in.pose.position.y, 0.65, 0.0]
+			
+			
+			#espeak.synth("Starting diversion to ROI")
+			self.espeak_publisher.publish("Starting diversion to ROI")
+			
 			# Set the "return waypoint" (at yaw zero)
 			rwp = [self.current_location.x, self.current_location.y, self.current_location.z, 0.0]
 
@@ -232,9 +263,19 @@ class Guidance():
 				rospy.signal_shutdown("cancelled")
 				return
 
-			rospy.loginfo("Reached diversion ROI!")
-			# XXX: Do something?
-			rospy.sleep(rospy.Duration(10))
+			rospy.loginfo("Reached diversion ROI, dropping payload!")
+			# XXX: Do something? DROP THE PAYLOAD.
+			#rostopic pub /actuator_control/actuator_a std_msgs/Bool '{data: True}'
+			if(msg_in.pose.position.z == 0):
+				self.payload_pub.publish(False)
+				#espeak.synth("Deploying GPS Tracker")
+				self.espeak_publisher.publish("Deploying GPS Tracker")
+			elif(msg_in.pose.position.z == 1):
+				self.payload_pub.publish(True)
+				#espeak.synth("Deploying Epi-Pen")
+				self.espeak_publisher.publish("Deploying Epi-Pen")
+
+			rospy.sleep(rospy.Duration(5))
 
 			rospy.loginfo("Returning to flight plan...")
 
@@ -421,7 +462,8 @@ class Guidance():
 
 	def callback_landing_coordinate(self, msg_in):
 		if not self.detected_landing_point:
-			espeak.synth("Landing coordinate detected")
+			#espeak.synth("Landing coordinates detected")
+			self.espeak_publisher.publish("Landing coordinates detected")
 			rospy.loginfo("Detected landing coordinate.")
 			rospy.loginfo(msg_in.x)
 			rospy.loginfo(msg_in.y)
@@ -429,10 +471,80 @@ class Guidance():
 			self.landing_coordinate = msg_in
 			self.detected_landing_point = True
 
-			self.waypoints.append([msg_in.x, msg_in.y, 2, 0])
-			self.waypoints.append([msg_in.x, msg_in.y, 1, 0])
+			self.waypoints.append([msg_in.x, self.waypoints[len(self.waypoints) - 1][1], 1, 0])
+			self.waypoints.append([self.waypoints[len(self.waypoints) - 1][0], msg_in.y, 1, 0])
 
+
+	def callback_battery(self, msg_in):
+		self.battery_per = msg_in.percentage
+		rospy.loginfo(msg_in.percentage)
+		#self.uav_health()
+
+	def uav_health(self, timer=None):
+		if self.battery_per <= self.critical_battery:
+			rospy.loginfo("Battery under critical level, Safe landing start.")
+			rospy.loginfo(self.battery_per)
+
+			#Code for emergency landing at -1,-1.
 			
+			#WHEN THIS RUNS DURING PAYLOAD DEPLOYMENT IT GOES TO THE LAST 
+			#WAYPOINT BECAUSE IT GOES BACK TO THE SEND-WP AND THINKS ITS
+			#AT THE LAST WAYPOINT.
+
+
+			self.nextWaypointIndex = len(self.waypoints)
+
+			self.send_wp([-1.0, -1.0, 0.6, 0])
+	
+		
+			rospy.loginfo("Emergency land completed.")
+
+
+
+
+#Generates waypoints given search area, altitude, FOV and overlap.
+#(Search area as observed standing from the desk x-> horizontal, y-> vertical).
+#(FOV is taken as half of the angle of the camera (something like 19 degrees i think)).
+#(NEED TO IMPORT MATH).
+#SEE THE COMMENT "EXTREMELY IMPORTANT!!!!!!!!!!!!!!!!!!!!!!!!!"
+def generate_waypoints(search_x, search_y, altitude, fov, overlap):
+
+	#Calculate pass length. 
+	image_length = 2 * (altitude * math.tan(fov*(math.pi/180)))
+	pass_length = image_length * (1.0 - overlap)
+
+	#Calculate number of passes required.
+	num_passes = int(math.ceil(search_y / pass_length))
+
+	#Create waypoints (two waypoints per pass).
+	waypoint_list = []
+	for waypoint_index in range(num_passes):
+		
+		#X position is the same for both waypoints in one pass. 
+		#waypoint_x = (((search_x / pass_length) * (waypoint_index + 1)) + (pass_length/2))
+		waypoint_y = (pass_length / 2) + (pass_length * waypoint_index)
+		waypoint_y_zeroed = waypoint_y - (search_y / 2)
+
+		#Y position is the same but opposite.
+		waypoint_x_top = (search_x/2) - (pass_length/2)
+		waypoint_x_bottom = -1 * waypoint_x_top
+
+		#Waypoints.
+		#EXTREMELY IMPORTANT!!!!!!!!!!!!!!!!!!!!!!!!!
+		#The actual room is flipped, x is y, y is x. So here, the values are just added in reverse. 
+		top_waypoint = [float(waypoint_x_top), float(waypoint_y_zeroed), float(altitude), 0.0]
+		bottom_waypoint = [float(waypoint_x_bottom), float(waypoint_y_zeroed), float(altitude), 0.0]
+
+		#If the index is even, bottom is first...etc.
+		if (waypoint_index % 2) == 0: #Even.
+			waypoint_list.append(bottom_waypoint)
+			waypoint_list.append(top_waypoint)
+		else: #Odd.
+			waypoint_list.append(top_waypoint)
+			waypoint_list.append(bottom_waypoint)
+
+	#Return the waypoint list.
+	return waypoint_list		
 
 	
 
@@ -443,41 +555,69 @@ def main(args):
 	# List of waypoints
 	# surveyAltitude = 2.5
 	# [X, Y, Z, Yaw]
-	wpsR1 = [[ 0.0, 0.0, surveyAltitude, 0.0],
-		   [ 1.0, 1.0, surveyAltitude, 0.0],
-		   [-1.0, 1.0, surveyAltitude, 0.0],
-		   [-1.0,-1.0, surveyAltitude, 0.0],
-		   [ 1.0,-1.0, surveyAltitude, 0.0],
-		   [ 0.0, 0.0, surveyAltitude, 0.0]]
+	# wpsR1 = [[ 0.0, 0.0, surveyAltitude, 0.0],
+	# 	   [ 1.0, 1.0, surveyAltitude, 0.0],
+	# 	   [-1.0, 1.0, surveyAltitude, 0.0],
+	# 	   [-1.0,-1.0, surveyAltitude, 0.0],
+	# 	   [ 1.0,-1.0, surveyAltitude, 0.0],
+	# 	   [ 0.0, 0.0, surveyAltitude, 0.0]]
 
-	wpsR2 = [[ 0.0, 0.0, surveyAltitude*2, 0.0],
-		   [ 1.0, 1.0, surveyAltitude*2, 0.0],
-		   [-1.0, 1.0, surveyAltitude*2, 0.0],
-		   [-1.0,-1.0, surveyAltitude*2, 0.0],
-		   [ 1.3,-1.0, surveyAltitude*2, 0.0],
-		   [ 1.3,1.0, surveyAltitude*2, 0.0],
-		   [ 1.0,-1.0, surveyAltitude*2, 0.0],
-		   [ 0.0, 0.0, surveyAltitude*2, 0.0]]
+	# wpsR2 = [[ 0.0, 0.0, surveyAltitude*2, 0.0],
+	# 	   [ 1.0, 1.0, surveyAltitude*2, 0.0],
+	# 	   [-1.0, 1.0, surveyAltitude*2, 0.0],
+	# 	   [-1.0,-1.0, surveyAltitude*2, 0.0],
+	# 	   [ 1.3,-1.0, surveyAltitude*2, 0.0],
+	# 	   [ 1.3,1.0, surveyAltitude*2, 0.0],
+	# 	   [ 1.0,-1.0, surveyAltitude*2, 0.0],
+	# 	   [ 0.0, 0.0, surveyAltitude*2, 0.0]]
 
-	#Lawnmower pattern.
-	lawn_alt = 3
-	lawn_wps = [[ 0.0, 0.0, lawn_alt , 0.0],
-		   [-3.5, 0.0, lawn_alt , 0.0],
-		   [ -3.5, -2.0,lawn_alt, 0.0],
-		   [3.5, -2.0, lawn_alt, 0.0],
-		   [3.5,-1.0, lawn_alt, 0.0],
-		   [ -3.5,-1.0, lawn_alt, 0.0],
-		   [ -3.5,0.0, lawn_alt, 0.0],
-		   [ 3.5 ,0.0, lawn_alt, 0.0],
-		   [ 3.5, 1.0, lawn_alt, 0.0],
-		   [ -3.5, 1.0, lawn_alt, 0.0],
-		   [ -3.5, 2.0, lawn_alt, 0.0],
-		   [ 3.5, 2.0, lawn_alt, 0.0]]
+	# #Lawnmower pattern.
+	# lawn_alt = 3
+	# lawn_wps = [[ 0.0, 0.0, lawn_alt , 0.0],
+	# 	   [-3.5, 0.0, lawn_alt , 0.0],
+	# 	   [ -3.5, -2.0,lawn_alt, 0.0],
+	# 	   [3.5, -2.0, lawn_alt, 0.0],
+	# 	   [3.5,-1.0, lawn_alt, 0.0],
+	# 	   [ -3.5,-1.0, lawn_alt, 0.0],
+	# 	   [ -3.5,0.0, lawn_alt, 0.0],
+	# 	   [ 3.5 ,0.0, lawn_alt, 0.0],
+	# 	   [ 3.5, 1.0, lawn_alt, 0.0],
+	# 	   [ -3.5, 1.0, lawn_alt, 0.0],
+	# 	   [ -3.5, 2.0, lawn_alt, 0.0],
+	# 	   [ 3.5, 2.0, lawn_alt, 0.0]]
 
-	if surveyAltitude > 2:
-		wps = wpsR1
-	else:
-		wps = wpsR2
+	# if surveyAltitude > 2:
+	# 	wps = wpsR1
+	# else:
+	# 	wps = wpsR2
+
+	x = 8
+	y = 5
+	alt = 3
+	fov = 19.59
+	overlap = 0.4 #40%.
+
+	lawn_wps = generate_waypoints(x, y, alt, fov, overlap)
+
+	# lawn_alt = 3
+	# lawn_wps = [[ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	# 	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	# 	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0],
+	#  	   [ 0.0, 0.0, lawn_alt , 0.0]]
+
 
 	# Create our guidance class option
 	guide = Guidance(lawn_wps)
